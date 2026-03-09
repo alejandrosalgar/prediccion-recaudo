@@ -1,0 +1,11 @@
+# Render Blueprint: desplegar la API sin tarjeta
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: api-recaudo
+    runtime: python
+    buildCommand: pip install -r requirements-api.txt
+    startCommand: gunicorn api:app --bind 0.0.0.0:$PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
