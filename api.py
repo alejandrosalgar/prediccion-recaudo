@@ -2,7 +2,9 @@
 API mínima para el frontend Angular.
 Misma lógica y fuente de datos que app.py (CSV).
 """
+
 import warnings
+
 import numpy as np
 import pandas as pd
 from flask import Flask, jsonify, request
@@ -16,10 +18,14 @@ from sklearn.neural_network import MLPRegressor
 
 warnings.simplefilter("ignore")
 
-DATA_URL = "https://raw.githubusercontent.com/julianuribegomez/tesoreria/main/data13.csv"
+DATA_URL = (
+    "https://raw.githubusercontent.com/julianuribegomez/tesoreria/main/data13.csv"
+)
 
 app = Flask(__name__)
+
 CORS(app)
+
 
 # Cargar datos una vez al arrancar
 _df = None
