@@ -267,6 +267,22 @@ _global_summary_cache = None
 _aggregates_cache = None
 
 
+def _fmt_recaudo(x) -> str:
+    """
+    Formatea un valor de recaudo como string sin notación científica,
+    para que se muestre tal cual (ej. 9,749,359,000).
+    """
+    if pd.isna(x):
+        return ""
+    try:
+        n = float(x)
+        if abs(n) >= 1e6 or (abs(n) < 0.01 and n != 0):
+            return f"{n:,.0f}"
+        return f"{n:,.2f}" if abs(n) != int(n) else f"{int(n):,}"
+    except (TypeError, ValueError):
+        return str(x)
+
+
 def _get_aggregates():
     """Precalcula totales por año y por (contrato, año). Cacheado."""
     global _aggregates_cache
@@ -332,6 +348,27 @@ def _contratos_from_question(question_lower: str, df):
     return [c for c in contratos_unicos if str(c).lower() in question_lower]
 
 
+_MESES = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+    "julio": 7, "agosto": 8, "septiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12,
+}
+
+
+def _mes_from_question(question_lower: str):
+    """Extrae el mes de la pregunta (nombre o «mes X»). Devuelve int o None."""
+    for nombre, num in _MESES.items():
+        if nombre in question_lower:
+            return num
+    import re
+    # "mes 2", "mes 02", "en el mes 3", etc.; no confundir con años de 4 dígitos
+    match = re.search(r"\bmes\s+(\d{1,2})\b", question_lower)
+    if match:
+        m = int(match.group(1))
+        if 1 <= m <= 12:
+            return m
+    return None
+
+
 def _try_direct_answer(question: str):
     """
     Responde con los datos directamente cuando la pregunta es tipo
@@ -363,12 +400,22 @@ def _try_direct_answer(question: str):
             f"Esta base tiene datos de recaudo de la tesorería: {n_filas:,} registros, "
             f"desde {años_str}. Incluye recaudo por concepto (ej. impuesto predial, industria y comercio), "
             f"por mes y por tipo de recaudo (presencial/virtual). "
-            f"En total hay {n_contratos} conceptos distintos y el recaudo total histórico es del orden de {total:,.0f} pesos. "
+            f"En total hay {n_contratos} conceptos distintos y el recaudo total histórico es del orden de {_fmt_recaudo(total)} pesos. "
             f"Puedes preguntar por un año o concepto concreto, o pedir una gráfica (por ejemplo: «Gráficame el recaudo por año»)."
         )
 
     años = _normalize_year_from_question(q)
     contratos = _contratos_from_question(q, df)
+    mes_num = _mes_from_question(q)
+
+    # ¿Cuánto se recaudó en [mes] [año]? / recaudo en febrero 2020
+    if mes_num is not None and años and ("recaudo" in q or "recaudó" in q or "cuánto" in q or "cuanto" in q):
+        año = años[0] if len(años) == 1 else max(años)
+        filas = df[(df["periodo"] == año) & (df["mes"] == mes_num)]
+        if not filas.empty:
+            total = filas["total_recaudo"].sum()
+            nombre_mes = [k for k, v in _MESES.items() if v == mes_num][0].capitalize()
+            return f"En {nombre_mes} de {int(año)} el recaudo total fue de {_fmt_recaudo(total)} pesos."
 
     # ¿Cuánto se recaudó en total en [año]? / recaudo total en [año]
     if años and (
@@ -377,9 +424,9 @@ def _try_direct_answer(question: str):
         if len(años) == 1:
             valor = por_año.get(años[0])
             if valor is not None:
-                return f"En {años[0]} el recaudo total fue de {valor:,.0f} pesos (suma de todos los conceptos y meses)."
+                return f"En {años[0]} el recaudo total fue de {_fmt_recaudo(valor)} pesos (suma de todos los conceptos y meses)."
         else:
-            partes = [f"En {y}: {por_año.get(y, 0):,.0f} pesos" for y in años]
+            partes = [f"En {y}: {_fmt_recaudo(por_año.get(y, 0))} pesos" for y in años]
             return "Recaudo total por año: " + "; ".join(partes) + "."
 
     # ¿Cuánto en [contrato] en [año]? / recaudo en impuesto predial año pasado
@@ -395,7 +442,7 @@ def _try_direct_answer(question: str):
             total = filas["total_recaudo"].sum()
             años_str = ", ".join(str(int(y)) for y in sorted(filas["periodo"].unique()))
             respuestas.append(
-                f"En {c} ({años_str}): {total:,.0f} pesos."
+                f"En {c} ({años_str}): {_fmt_recaudo(total)} pesos."
             )
         if respuestas:
             return " ".join(respuestas)
@@ -408,7 +455,7 @@ def _try_direct_answer(question: str):
             ]
             if not filas.empty:
                 total = filas["total_recaudo"].sum()
-                return f"En {ultimo_año}, el recaudo en «{contratos[0]}» fue de {total:,.0f} pesos."
+                return f"En {ultimo_año}, el recaudo en «{contratos[0]}» fue de {_fmt_recaudo(total)} pesos."
     return None
 
 
@@ -514,17 +561,20 @@ def _build_global_summary():
     )
     lines.append(f"- Número de filas: {len(df)}")
     lines.append(f"- Periodos (años): {df['periodo'].min():.0f} a {df['periodo'].max():.0f}")
-    lines.append(f"- Total recaudo (suma): {df['total_recaudo'].sum():.0f}")
+    lines.append(f"- Total recaudo (suma): {_fmt_recaudo(df['total_recaudo'].sum())}")
     lines.append(
-        f"- Promedio total_recaudo por fila: {df['total_recaudo'].mean():.2f}"
+        f"- Promedio total_recaudo por fila: {_fmt_recaudo(df['total_recaudo'].mean())}"
     )
     resumen_periodo = (
         df.groupby("periodo")["total_recaudo"]
         .agg(["sum", "mean", "count"])
         .round(0)
     )
+    resumen_periodo_str = resumen_periodo.copy()
+    resumen_periodo_str["sum"] = resumen_periodo_str["sum"].apply(_fmt_recaudo)
+    resumen_periodo_str["mean"] = resumen_periodo_str["mean"].apply(_fmt_recaudo)
     lines.append("\nRecaudo agregado por periodo (año):")
-    lines.append(resumen_periodo.to_string())
+    lines.append(resumen_periodo_str.to_string())
     _global_summary_cache = "\n".join(lines)
     return _global_summary_cache
 
@@ -590,15 +640,35 @@ def _build_rag_context(question: str) -> str:
         .round(0)
         .reset_index()
     )
+    resumen_filtrado = resumen_filtrado.head(40).copy()
+    resumen_filtrado["sum"] = resumen_filtrado["sum"].apply(_fmt_recaudo)
+    resumen_filtrado["mean"] = resumen_filtrado["mean"].apply(_fmt_recaudo)
     lines.append(
         "\nResumen agregado del subconjunto relevante por periodo y mes (sum, mean, count de total_recaudo):"
     )
-    lines.append(resumen_filtrado.head(40).to_string(index=False))
+    lines.append(resumen_filtrado.to_string(index=False))
 
+    for col in ["total_recaudo", "total_transacciones"]:
+        if col in df_sample.columns:
+            df_sample[col] = df_sample[col].apply(_fmt_recaudo)
     lines.append("\nMuestra de filas relevantes (máx 40):")
     lines.append(df_sample.to_string(index=False))
 
     return "\n".join(lines)
+
+
+def _clean_scientific_in_answer(text: str) -> str:
+    """Sustituye notación científica en la respuesta por cifra legible (ej. 9.74e+09 -> 9,749,359,000)."""
+    import re
+    if not text:
+        return text
+    pattern = re.compile(r"\b(\d+\.?\d*[eE][+-]?\d+)\b")
+    def repl(m):
+        try:
+            return _fmt_recaudo(float(m.group(1)))
+        except (ValueError, TypeError):
+            return m.group(0)
+    return pattern.sub(repl, text)
 
 
 # Modelos a probar en orden (por si alguno devuelve 404)
@@ -609,6 +679,7 @@ def _ask_gemini(api_key: str, context: str, question: str) -> str:
     """Llama a la API de Gemini con el contexto y la pregunta."""
     prompt = f"""Eres un asistente que responde preguntas sobre datos de recaudo de tesorería.
 Usa ÚNICAMENTE la información del siguiente contexto para responder. Responde en español de forma clara y concisa.
+Importante: cuando cites cifras de recaudo o cantidades, escríbelas siempre como número completo con separador de miles (ej. 9,749,359,000). Nunca uses notación científica (ej. 9.74e+09).
 
 CONTEXTO (datos):
 {context}
@@ -659,7 +730,8 @@ def _ask_groq(api_key: str, context: str, question: str) -> str:
     """
     prompt = (
         "Eres un asistente que responde preguntas sobre datos de recaudo de tesorería. "
-        "Usa ÚNICAMENTE la información del siguiente contexto. Responde en español, claro y conciso.\n\n"
+        "Usa ÚNICAMENTE la información del siguiente contexto. Responde en español, claro y conciso. "
+        "Cuando cites cifras de recaudo, escríbelas como número completo con separador de miles (ej. 9,749,359,000), nunca en notación científica.\n\n"
         f"CONTEXTO:\n{context}\n\nPREGUNTA: {question}\n\nRESPUESTA:"
     )
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -717,6 +789,7 @@ def rag_ask():
     # Intentar responder solo con los datos (sin Gemini) para evitar 429
     direct = _try_direct_answer(question)
     if direct is not None:
+        direct = _clean_scientific_in_answer(direct)
         if len(_rag_answer_cache) >= _RAG_CACHE_MAX:
             _rag_answer_cache.pop(next(iter(_rag_answer_cache)))
         _rag_answer_cache[key] = direct
@@ -755,7 +828,7 @@ def rag_ask():
                     )
             else:
                 raise
-        # Guardar en cache (LRU simple: si superamos el límite, borrar el más antiguo)
+        answer = _clean_scientific_in_answer(answer)
         if len(_rag_answer_cache) >= _RAG_CACHE_MAX:
             _rag_answer_cache.pop(next(iter(_rag_answer_cache)))
         _rag_answer_cache[key] = answer
